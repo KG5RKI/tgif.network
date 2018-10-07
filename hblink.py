@@ -39,10 +39,13 @@ from bitstring import BitArray
 import socket
 import sys
 import json
+from importlib import import_module
+import socket
 
 # Twisted is pretty important, so I keep it separate
-from twisted.internet.protocol import DatagramProtocol
+from twisted.internet.protocol import DatagramProtocol, Factory, Protocol
 from twisted.internet import reactor
+from twisted.protocols.basic import NetstringReceiver
 from twisted.internet import task
 
 # Other files we pull from -- this is mostly for readability and segmentation
@@ -51,6 +54,9 @@ import hb_config
 from hb_sqlite import *
 from dmr_utils.utils import int_id, hex_str_4
 import database as db
+
+import cPickle as pickle
+from reporting_const import *
 
 # Does anybody read this stuff? There's a PEP somewhere that says I should do this.
 __author__     = 'Cortney T. Buffington, N0MJS'
@@ -70,7 +76,22 @@ dbb = Database()
 dmrd_last_ip = {}
 dmrd_last_time = {}
 
-
+def config_reports(_config, _logger, _factory):                 
+    if True: #_config['REPORTS']['REPORT']:
+        def reporting_loop(_logger, _server):
+            _logger.debug('Periodic reporting loop started')
+            _server.send_config()
+            
+        _logger.info('HBlink TCP reporting server configured')
+        
+        report_server = _factory(_config, _logger)
+        report_server.clients = []
+        reactor.listenTCP(_config['REPORTS']['REPORT_PORT'], report_server)
+        
+        reporting = task.LoopingCall(reporting_loop, _logger, report_server)
+        reporting.start(_config['REPORTS']['REPORT_INTERVAL'])
+    
+    return report_server
 
 # Shut ourselves down gracefully by disconnecting from the masters and clients.
 def hblink_handler(_signal, _frame, _logger):
@@ -122,11 +143,12 @@ class AMBE:
 
 class HBSYSTEM(DatagramProtocol):
     
-    def __init__(self, _name, _config, _logger):
+    def __init__(self, _name, _config, _logger, _report):
         # Define a few shortcuts to make the rest of the class more readable
         self._CONFIG = _config
         self._system = _name
         self._logger = _logger
+        self._report = _report
         self._config = self._CONFIG['SYSTEMS'][self._system]
         sys.excepthook = self.handle_exception
 
@@ -151,7 +173,7 @@ class HBSYSTEM(DatagramProtocol):
         
         # Configure for AMBE audio export if enabled
         if self._config['EXPORT_AMBE']:
-            self._ambe = AMBE()
+            self._ambe = AMBE(_config, _logger)
 
     def try_find_client(self, address, repeater_id, **kwargs):
         client = self.db.query(db.repeater).filter_by(address=address, repeater_id=repeater_id).first()
@@ -261,6 +283,11 @@ class HBSYSTEM(DatagramProtocol):
         self.send_master('RPTCL'+self._config['RADIO_ID'])
         self._logger.info('(%s) De-Registeration sent to Master: %s:%s', self._system, self._config['MASTER_IP'], self._config['MASTER_PORT'])
     
+    def check_dmrid(self, dmrid):
+        if dmrid<10000: #or dmrid==310033:
+            return False
+        return True
+
     # Aliased in __init__ to datagramReceived if system is a master
     def master_datagramReceived(self, _data, (_host, _port)):
         global dmrd_last_ip
@@ -315,6 +342,8 @@ class HBSYSTEM(DatagramProtocol):
                 # The basic purpose of a master is to repeat to the clients
                 if self._config['REPEAT'] == True:
 
+
+	
                     cur_time = time()
                     client_ip = self._clients[_radio_id]['IP']
                     okgo = 0
@@ -327,9 +356,13 @@ class HBSYSTEM(DatagramProtocol):
                             if ind not in dmrd_last_time:
                                 dmrd_last_time[ind] = cur_time
                                 okgo = 1
-                            elif cur_time > (cur_time - dmrd_last_time[ind] > 1.5):
+                                self._logger.debug('dmrd new tg dest %s', ind)
+                            elif (cur_time - dmrd_last_time[ind]) > 3:
                                 dmrd_last_ip[ind] = client_ip
                                 okgo = 1
+                                self._logger.debug('dmrd_ > 3 %d', cur_time)
+                            else:
+                            	  self._logger.debug('dmrd_last_ip %s', dmrd_last_ip[ind])
                         else:
                             okgo = 1
                         dmrd_last_time[ind] = cur_time
@@ -338,7 +371,9 @@ class HBSYSTEM(DatagramProtocol):
                         self._logger.warning('Failed to get tg info for %d', int_id(_dst_id))
 
                     
-                    if okgo == 1:
+                    if okgo == 1 and _rf_src != 310033 and _radio_id != 310033:
+                    	   #self._logger.debug('(%s) Packet on TS%s from %s (%s) for destination ID %s [Stream ID: %s]', self._system, _slot, self._clients[_radio_id]['CALLSIGN'], int_id(_radio_id), int_id(_dst_id), int_id(_stream_id))
+
                         for _client in self._clients:
                             if _client != _radio_id and (self._clients[_client]['TG'] == int_id(_dst_id) or self._clients[_client]['TG'] == 444411):
 
@@ -353,7 +388,7 @@ class HBSYSTEM(DatagramProtocol):
         elif _command == 'RPTL':    # RPTLogin -- a repeater wants to login
             _radio_id = _data[4:8]
             client = self.try_find_client(db.ip2long(_host), int(ahex(_radio_id), 16))
-            if _radio_id:           # Future check here for valid Radio ID
+            if _radio_id and self.check_dmrid(int(ahex(_radio_id), 16)):           # Future check here for valid Radio ID
                 self._clients.update({_radio_id: {      # Build the configuration data strcuture for the client
                     'CONNECTION': 'RPTL-RECEIVED',
                     'PINGS_RECEIVED': 0,
@@ -441,7 +476,7 @@ class HBSYSTEM(DatagramProtocol):
             else:
                 _radio_id = _data[4:8]      # Configure Command
                 client = self.try_find_client(db.ip2long(_host), int(ahex(_radio_id), 16))
-                if _radio_id not in self._clients and client:
+                if _radio_id not in self._clients and client and self.check_dmrid(int(ahex(_radio_id), 16)):
                     self._clients.update({_radio_id: {      # Build the configuration data strcuture for the client
                         'CONNECTION': 'YES',
                         'PINGS_RECEIVED': 0,
@@ -557,43 +592,44 @@ class HBSYSTEM(DatagramProtocol):
         elif _command == 'RPTP':    # RPTPing -- client is pinging us
                 _radio_id = _data[7:11]
                 client = self.try_find_client(db.ip2long(_host), int(ahex(_radio_id), 16))
-                if _radio_id in self._clients \
-                            and self._clients[_radio_id]['CONNECTION'] == "YES" \
-                            and self._clients[_radio_id]['IP'] == _host \
-                            and self._clients[_radio_id]['PORT'] == _port:
-                    self._clients[_radio_id]['LAST_PING'] = time()
-                    client.last_ping = self._clients[_radio_id]['LAST_PING']
-                    self.db.commit()
-                    self.send_client(_radio_id, 'MSTPONG'+_radio_id)
-                    self._logger.debug('(%s) Received and answered RPTPING from client %s (%s)', self._system, self._clients[_radio_id]['CALLSIGN'], int_id(_radio_id))
-                elif client:
-                    self._clients.update({_radio_id: {      # Build the configuration data strcuture for the client
-                        'CONNECTION': 'YES',
-                        'PINGS_RECEIVED': 0,
-                        'LAST_PING': time(),
-                        'IP': _host,
-                        'PORT': client.port,
-                        'SALT': client.salt,
-                        'RADIO_ID': str(int(ahex(_radio_id), 16)),
-                        'CALLSIGN': 'TEST',
-                        'RX_FREQ': '',
-                        'TX_FREQ': '',
-                        'TX_POWER': '',
-                        'COLORCODE': '',
-                        'LATITUDE': '',
-                        'LONGITUDE': '',
-                        'HEIGHT': '',
-                        'LOCATION': '',
-                        'DESCRIPTION': '',
-                        'SLOTS': '',
-                        'URL': '',
-                        'SOFTWARE_ID': '',
-                        'PACKAGE_ID': '',
-                        'TG': 9,
-                    }})
-                else:
-                    self.transport.write('MSTNAK'+_radio_id, (_host, _port))
-                    self._logger.warning('(%s) RPTPING from Radio ID that has not logged in: %s', self._system, int_id(_radio_id))
+                if _radio_id and self.check_dmrid(int(ahex(_radio_id), 16)): 
+                    if _radio_id in self._clients \
+                                and self._clients[_radio_id]['CONNECTION'] == "YES" \
+                                and self._clients[_radio_id]['IP'] == _host \
+                                and self._clients[_radio_id]['PORT'] == _port:
+                        self._clients[_radio_id]['LAST_PING'] = time()
+                        client.last_ping = self._clients[_radio_id]['LAST_PING']
+                        self.db.commit()
+                        self.send_client(_radio_id, 'MSTPONG'+_radio_id)
+                        self._logger.debug('(%s) Received and answered RPTPING from client %s (%s)', self._system, self._clients[_radio_id]['CALLSIGN'], int_id(_radio_id))
+                    elif client:
+                        self._clients.update({_radio_id: {      # Build the configuration data strcuture for the client
+                            'CONNECTION': 'YES',
+                            'PINGS_RECEIVED': 0,
+                            'LAST_PING': time(),
+                            'IP': _host,
+                            'PORT': client.port,
+                            'SALT': client.salt,
+                            'RADIO_ID': str(int(ahex(_radio_id), 16)),
+                            'CALLSIGN': 'TEST',
+                            'RX_FREQ': '',
+                            'TX_FREQ': '',
+                            'TX_POWER': '',
+                            'COLORCODE': '',
+                            'LATITUDE': '',
+                            'LONGITUDE': '',
+                            'HEIGHT': '',
+                            'LOCATION': '',
+                            'DESCRIPTION': '',
+                            'SLOTS': '',
+                            'URL': '',
+                            'SOFTWARE_ID': '',
+                            'PACKAGE_ID': '',
+                            'TG': 9,
+                        }})
+                    else:
+                        self.transport.write('MSTNAK'+_radio_id, (_host, _port))
+                        self._logger.warning('(%s) RPTPING from Radio ID that has not logged in: %s', self._system, int_id(_radio_id))
 
         else:
             self._logger.error('(%s) Unrecognized command. Raw HBP PDU: %s', self._system, ahex(_data))
@@ -722,6 +758,49 @@ class HBSYSTEM(DatagramProtocol):
             else:
                 self._logger.error('(%s) Received an invalid command in packet: %s', self._system, ahex(_data))
 
+class report(NetstringReceiver):
+    def __init__(self, factory):
+        self._factory = factory
+
+    def connectionMade(self):
+        self._factory.clients.append(self)
+        self._factory._logger.info('HBlink reporting client connected: %s', self.transport.getPeer())
+
+    def connectionLost(self, reason):
+        self._factory._logger.info('HBlink reporting client disconnected: %s', self.transport.getPeer())
+        self._factory.clients.remove(self)
+
+    def stringReceived(self, data):
+        self.process_message(data)
+
+    def process_message(self, _message):
+        opcode = _message[:1]
+        if opcode == REPORT_OPCODES['CONFIG_REQ']:
+            self._factory._logger.info('HBlink reporting client sent \'CONFIG_REQ\': %s', self.transport.getPeer())
+            self.send_config()
+        else:
+            self._factory._logger.error('got unknown opcode')
+        
+class reportFactory(Factory):
+    def __init__(self, config, logger):
+        self._config = config
+        self._logger = logger
+        
+    def buildProtocol(self, addr):
+        if (addr.host) in self._config['REPORTS']['REPORT_CLIENTS'] or '*' in self._config['REPORTS']['REPORT_CLIENTS']:
+            self._logger.debug('Permitting report server connection attempt from: %s:%s', addr.host, addr.port)
+            return report(self)
+        else:
+            self._logger.error('Invalid report server connection attempt from: %s:%s', addr.host, addr.port)
+            return None
+            
+    def send_clients(self, _message):
+        for client in self.clients:
+            client.sendString(_message)
+            
+    def send_config(self):
+        serialized = pickle.dumps(self._config['SYSTEMS'], protocol=pickle.HIGHEST_PROTOCOL)
+        self.send_clients(REPORT_OPCODES['CONFIG_SND']+serialized)
 
 #************************************************
 #      MAIN PROGRAM LOOP STARTS HERE
@@ -768,11 +847,13 @@ if __name__ == '__main__':
     for sig in [signal.SIGTERM, signal.SIGINT]:
         signal.signal(sig, sig_handler)
 
+    report_server = config_reports(CONFIG, logger, reportFactory) 
+
     # HBlink instance creation
     logger.info('HBlink \'HBlink.py\' (c) 2016 N0MJS & the K0USY Group - SYSTEM STARTING...')
     for system in CONFIG['SYSTEMS']:
         if CONFIG['SYSTEMS'][system]['ENABLED']:
-            systems[system] = HBSYSTEM(system, CONFIG, logger)
+            systems[system] = HBSYSTEM(system, CONFIG, logger, report_server)
             reactor.listenUDP(CONFIG['SYSTEMS'][system]['PORT'], systems[system], interface=CONFIG['SYSTEMS'][system]['IP'])
             logger.debug('%s instance created: %s, %s', CONFIG['SYSTEMS'][system]['MODE'], system, systems[system])
 

@@ -38,8 +38,9 @@ from threading import Lock
 from time import time, sleep, clock, localtime, strftime
 
 # Twisted is pretty important, so I keep it separate
-from twisted.internet.protocol import DatagramProtocol
+from twisted.internet.protocol import DatagramProtocol, Factory, Protocol
 from twisted.internet import reactor
+from twisted.protocols.basic import NetstringReceiver
 from twisted.internet import task
 
 # Things we import from the main hblink module
@@ -52,6 +53,10 @@ import hb_const
 from dmr_utils import ambe_utils
 from dmr_utils.ambe_bridge import AMBE_HB
 
+# Imports for the reporting server
+import cPickle as pickle
+from reporting_const import *
+
 # Does anybody read this stuff? There's a PEP somewhere that says I should do this.
 __author__     = 'Mike Zingman, N4IRR and Cortney T. Buffington, N0MJS'
 __copyright__  = 'Copyright (c) 2017 Mike Zingman N4IRR'
@@ -63,6 +68,26 @@ __status__     = 'pre-alpha'
 __version__    = '20170620'
 
 mutex = Lock()  # Used to synchronize Peer I/O in different threads
+
+dmrd_last_ip = {}
+dmrd_last_time = {}
+
+def config_reports(_config, _logger, _factory):                 
+    if True: #_config['REPORTS']['REPORT']:
+        def reporting_loop(_logger, _server):
+            _logger.debug('Periodic reporting loop started')
+            _server.send_config()
+            
+        _logger.info('HBlink TCP reporting server configured')
+        
+        report_server = _factory(_config, _logger)
+        report_server.clients = []
+        reactor.listenTCP(_config['REPORTS']['REPORT_PORT'], report_server)
+        
+        reporting = task.LoopingCall(reporting_loop, _logger, report_server)
+        reporting.start(_config['REPORTS']['REPORT_INTERVAL'])
+    
+    return report_server
 
 class TRANSLATE:
     def __init__(self, config_file):
@@ -78,7 +103,8 @@ class TRANSLATE:
     def find_rule(self, tg, slot):
         if str(tg) in self.translate:
             return self.translate[str(tg)]
-        return (tg, slot)
+        #if talkgroup dst not in rules, do not forward to partners
+        return (0, 0)
     def load_config(self, config_file):
         print('load config file', config_file)
         pass
@@ -88,13 +114,15 @@ translate = TRANSLATE('config.file')
 
 class HB_BRIDGE(HBSYSTEM):
     
-    def __init__(self, _name, _config, _logger):
-        HBSYSTEM.__init__(self, _name, _config, _logger)
+    def __init__(self, _name, _config, _logger, report_server):
+        HBSYSTEM.__init__(self, _name, _config, _logger, report_server)
 
 
         self._ambeRxPort = 31003        # Port to listen on for AMBE frames to transmit to all peers
         self._gateway = "127.0.0.1"     # IP address of Analog_Bridge app
         self._gateway_port = 31000      # Port Analog_Bridge is listening on for AMBE frames to decode
+        
+        
 
         self.load_configuration(cli_args.BRIDGE_CONFIG_FILE)
 
@@ -133,20 +161,56 @@ class HB_BRIDGE(HBSYSTEM):
     # HBLink callback with DMR data from perr/master.  Send this data to any partner listening
     def dmrd_received(self, _radio_id, _rf_src, _dst_id, _seq, _slot, _call_type, _frame_type, _dtype_vseq, _stream_id, _data):
         _dst_id, _slot = translate.find_rule(_dst_id,_slot)
-        _tx_slot = self.hb_ambe.tx[_slot]
-        _seq = ord(_data[4])
-        _tx_slot.frame_count += 1
-        if (_stream_id != _tx_slot.stream_id):
-            self.hb_ambe.begin_call(_slot, _rf_src, _dst_id, _radio_id, _tx_slot.cc, _seq, _stream_id)
-            _tx_slot.lastSeq = _seq
-        if (_frame_type == hb_const.HBPF_DATA_SYNC) and (_dtype_vseq == hb_const.HBPF_SLT_VTERM) and (_tx_slot.type != hb_const.HBPF_SLT_VTERM):
-            self.hb_ambe.end_call(_tx_slot)
-        if (int_id(_data[15]) & 0x20) == 0:
-            _dmr_frame = BitArray('0x'+ahex(_data[20:]))
-            _ambe = _dmr_frame[0:108] + _dmr_frame[156:264]
-            self.hb_ambe.export_voice(_tx_slot, _seq, _ambe.tobytes())
+        
+		  #if dst talkgroup is not in rule set, do not forward data to partner applications        
+        if _dst_id == 0:
+            return		
+        cur_time = time()
+        client_ip = self.transport.getPeer()
+        okgo = 0
+        try:
+            ind = str(int_id(_dst_id))
+            if ind not in dmrd_last_ip:
+            	dmrd_last_ip[ind] = client_ip
+
+            if dmrd_last_ip[ind] != client_ip or _tx_slot.lastSeq != _seq:
+               if ind not in dmrd_last_time:
+               	dmrd_last_time[ind] = cur_time
+               	self._logger.debug('dmrd new tg dest %s', ind)
+               	okgo = 1
+               elif cur_time > (cur_time - dmrd_last_time[ind] > 3):
+               	dmrd_last_ip[ind] = client_ip
+               	okgo = 1
+               	self._logger.debug('dmrd_ > 3 %d', cur_time)
+               else:
+               	self._logger.debug('dmrd_last_ip %s', dmrd_last_ip[ind])
+               
+               	
+            else:
+               okgo = 1
+            dmrd_last_time[ind] = cur_time
+        except:
+            okgo = 1
+            self._logger.debug('Failed to get tg info for %d', int_id(_dst_id))
+        self._logger.debug('Failed to get tg info for %d', int_id(_dst_id))    
+        if okgo == 1 and _rf_src != 310033 and _radio_id != 310033:
+            _tx_slot = self.hb_ambe.tx[_slot]
+            _seq = ord(_data[4])
+            _tx_slot.frame_count += 1
+            if (_stream_id != _tx_slot.stream_id):
+               self.hb_ambe.begin_call(_slot, _rf_src, _dst_id, _radio_id, _tx_slot.cc, _seq, _stream_id)
+               _tx_slot.lastSeq = _seq
+            if (_frame_type == hb_const.HBPF_DATA_SYNC) and (_dtype_vseq == hb_const.HBPF_SLT_VTERM) and (_tx_slot.type != hb_const.HBPF_SLT_VTERM):
+               self.hb_ambe.end_call(_tx_slot)
+            if (int_id(_data[15]) & 0x20) == 0:
+               _dmr_frame = BitArray('0x'+ahex(_data[20:]))
+               _ambe = _dmr_frame[0:108] + _dmr_frame[156:264]
+               self.hb_ambe.export_voice(_tx_slot, _seq, _ambe.tobytes())
+               self._logger.debug('Exporting voice %d to %d', int_id(_seq), int_id(_dst_id))
+            else:
+               _tx_slot.lastSeq = _seq
         else:
-            _tx_slot.lastSeq = _seq
+        		self._logger.debug('Skipping transmit to %d', int_id(_dst_id))
 
     # The methods below are overridden becuse the launchUDP thread can also wite to a master or client async and confuse the master
     # A lock is used to synchronize the two threads so that the resource is protected
@@ -159,6 +223,52 @@ class HB_BRIDGE(HBSYSTEM):
         mutex.acquire()
         HBSYSTEM.send_clients(self, _packet)
         mutex.release()
+
+
+class report(NetstringReceiver):
+    def __init__(self, factory):
+        self._factory = factory
+
+    def connectionMade(self):
+        self._factory.clients.append(self)
+        self._factory._logger.info('HBlink reporting client connected: %s', self.transport.getPeer())
+
+    def connectionLost(self, reason):
+        self._factory._logger.info('HBlink reporting client disconnected: %s', self.transport.getPeer())
+        self._factory.clients.remove(self)
+
+    def stringReceived(self, data):
+        self.process_message(data)
+
+    def process_message(self, _message):
+        opcode = _message[:1]
+        if opcode == REPORT_OPCODES['CONFIG_REQ']:
+            self._factory._logger.info('HBlink reporting client sent \'CONFIG_REQ\': %s', self.transport.getPeer())
+            self.send_config()
+        else:
+            self._factory._logger.error('got unknown opcode')
+        
+class reportFactory(Factory):
+    def __init__(self, config, logger):
+        self._config = config
+        self._logger = logger
+        
+    def buildProtocol(self, addr):
+        if (addr.host) in self._config['REPORTS']['REPORT_CLIENTS'] or '*' in self._config['REPORTS']['REPORT_CLIENTS']:
+            self._logger.debug('Permitting report server connection attempt from: %s:%s', addr.host, addr.port)
+            return report(self)
+        else:
+            self._logger.error('Invalid report server connection attempt from: %s:%s', addr.host, addr.port)
+            return None
+            
+    def send_clients(self, _message):
+        for client in self.clients:
+            client.sendString(_message)
+            
+    def send_config(self):
+        serialized = pickle.dumps(self._config['SYSTEMS'], protocol=pickle.HIGHEST_PROTOCOL)
+        self.send_clients(REPORT_OPCODES['CONFIG_SND']+serialized)
+
 
 ############################################################################################################
 #      MAIN PROGRAM LOOP STARTS HERE
@@ -233,14 +343,15 @@ if __name__ == '__main__':
     talkgroup_ids = mk_id_dict(CONFIG['ALIASES']['PATH'], CONFIG['ALIASES']['TGID_FILE'])
     if talkgroup_ids:
         logger.info('ID ALIAS MAPPER: talkgroup_ids dictionary is available')
-        
+    
+    report_server = config_reports(CONFIG, logger, reportFactory) 
     
     # HBlink instance creation
     logger.info('HBlink \'HB_Bridge.py\' (c) 2017 Mike Zingman N4IRR, N0MJS - SYSTEM STARTING...')
     logger.info('Version %s', __version__)
     for system in CONFIG['SYSTEMS']:
         if CONFIG['SYSTEMS'][system]['ENABLED']:
-            systems[system] = HB_BRIDGE(system, CONFIG, logger)
+            systems[system] = HB_BRIDGE(system, CONFIG, logger, report_server)
             reactor.listenUDP(CONFIG['SYSTEMS'][system]['PORT'], systems[system], interface=CONFIG['SYSTEMS'][system]['IP'])
             logger.debug('%s instance created: %s, %s', CONFIG['SYSTEMS'][system]['MODE'], system, systems[system])
 
