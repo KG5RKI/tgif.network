@@ -357,10 +357,10 @@ class HBSYSTEM(DatagramProtocol):
                                 dmrd_last_time[ind] = cur_time
                                 okgo = 1
                                 self._logger.debug('dmrd new tg dest %s', ind)
-                            elif (cur_time - dmrd_last_time[ind]) > 3:
+                            elif (cur_time - dmrd_last_time[ind]) > 2:
                                 dmrd_last_ip[ind] = client_ip
                                 okgo = 1
-                                self._logger.debug('dmrd_ > 3 %d', cur_time)
+                                self._logger.debug('dmrd_ > 2 %d', cur_time)
                             else:
                             	  self._logger.debug('dmrd_last_ip %s', dmrd_last_ip[ind])
                         else:
