@@ -178,7 +178,7 @@ class HB_BRIDGE(HBSYSTEM):
                	dmrd_last_time[ind] = cur_time
                	self._logger.debug('dmrd new tg dest %s', ind)
                	okgo = 1
-               elif cur_time > (cur_time - dmrd_last_time[ind] > 3):
+               elif cur_time > (cur_time - dmrd_last_time[ind] > 1.5):
                	dmrd_last_ip[ind] = client_ip
                	okgo = 1
                	self._logger.debug('dmrd_ > 3 %d', cur_time)
@@ -192,7 +192,7 @@ class HB_BRIDGE(HBSYSTEM):
         except:
             okgo = 1
             self._logger.debug('Failed to get tg info for %d', int_id(_dst_id))
-        self._logger.debug('Failed to get tg info for %d', int_id(_dst_id))    
+        #self._logger.debug('Failed to get tg info for %d', int_id(_dst_id))    
         if okgo == 1 and _rf_src != 310033 and _radio_id != 310033:
             _tx_slot = self.hb_ambe.tx[_slot]
             _seq = ord(_data[4])
@@ -215,14 +215,14 @@ class HB_BRIDGE(HBSYSTEM):
     # The methods below are overridden becuse the launchUDP thread can also wite to a master or client async and confuse the master
     # A lock is used to synchronize the two threads so that the resource is protected
     def send_master(self, _packet):
-        mutex.acquire()
+        #mutex.acquire()
         HBSYSTEM.send_master(self, _packet)
-        mutex.release()
+        #mutex.release()
     
     def send_clients(self, _packet):
-        mutex.acquire()
+        #mutex.acquire()
         HBSYSTEM.send_clients(self, _packet)
-        mutex.release()
+        #mutex.release()
 
 
 class report(NetstringReceiver):

@@ -75,6 +75,7 @@ dbb = Database()
 
 dmrd_last_ip = {}
 dmrd_last_time = {}
+dmrd_last_vseq = {}
 
 def config_reports(_config, _logger, _factory):                 
     if True: #_config['REPORTS']['REPORT']:
@@ -317,13 +318,23 @@ class HBSYSTEM(DatagramProtocol):
                 _stream_id = _data[16:20]
                 _dst_id_int = int_id(_dst_id)
                 if _dst_id_int == 0:
-                    _dst_id_int = 9
+                    return
                 self._clients[_radio_id]['TG'] = _dst_id_int
                 #self._logger.debug('(%s) DMRD - Seqence: %s, RF Source: %s, Destination ID: %s', self._system, int_id(_seq), int_id(_rf_src), int_id(_dst_id))
 
                 # If AMBE audio exporting is configured...
                 if self._config['EXPORT_AMBE']:
                     self._ambe.parseAMBE(self._system, _data)
+                
+                _dmr_frame = BitArray('0x'+ahex(_data[20:]))
+                _ambe = _dmr_frame[0:108] + _dmr_frame[156:264]
+                #_sock.sendto(_ambe.tobytes(), ("127.0.0.1", 31000))
+
+                ambeBytes = _ambe.tobytes()
+                self._sock.sendto(ambeBytes[0:9], ("127.0.0.1", 3333))
+                self._sock.sendto(ambeBytes[9:18], ("127.0.0.1", 3333))
+                self._sock.sendto(ambeBytes[18:27], ("127.0.0.1", 3333))
+                
 
                 # database logic
                 client_ip = _host
@@ -347,8 +358,12 @@ class HBSYSTEM(DatagramProtocol):
                     cur_time = time()
                     client_ip = self._clients[_radio_id]['IP']
                     okgo = 0
+                    ind = str(int_id(_dst_id))
+                    
+                    #if ind not in dmrd_last_vseq:
+                    #    dmrd_last_vseq[ind] = hb_const.HBPF_SLT_VHEAD
+                        
                     try:
-                        ind = str(int_id(_dst_id))
                         if ind not in dmrd_last_ip:
                             dmrd_last_ip[ind] = client_ip
 
@@ -362,26 +377,49 @@ class HBSYSTEM(DatagramProtocol):
                                 okgo = 1
                                 self._logger.debug('dmrd_ > 2 %d', cur_time)
                             else:
-                            	  self._logger.debug('dmrd_last_ip %s', dmrd_last_ip[ind])
+                            	self._logger.debug('dmrd_last_ip %s', dmrd_last_ip[ind])
                         else:
                             okgo = 1
                         dmrd_last_time[ind] = cur_time
                     except:
                         okgo = 1
-                        self._logger.warning('Failed to get tg info for %d', int_id(_dst_id))
+                        self._logger.warning('Failed to get tg info for %d', int_id(_dst_id_int))
+
+                    #if (_frame_type == hb_const.HBPF_DATA_SYNC) and (_dtype_vseq == hb_const.HBPF_SLT_VHEAD): #and (dmrd_last_vseq[ind] == hb_const.HBPF_SLT_VTERM):
+                    #    self._logger.info('Call START from %s on TG %s - %s', self._clients[_radio_id]['CALLSIGN'], int_id(_dst_id), int_id(_stream_id) )
+                    #if (_dtype_vseq == hb_const.HBPF_SLT_VTERM):
+                    #    self._logger.info('Call END from %s on TG %s - %s', self._clients[_radio_id]['CALLSIGN'], int_id(_dst_id), int_id(_stream_id) )
+										
 
                     
-                    if okgo == 1 and _rf_src != 310033 and _radio_id != 310033:
+                    if okgo == 1 and _dst_id_int != 0: #and _rf_src != 310033 and _radio_id != 310033:
                     	   #self._logger.debug('(%s) Packet on TS%s from %s (%s) for destination ID %s [Stream ID: %s]', self._system, _slot, self._clients[_radio_id]['CALLSIGN'], int_id(_radio_id), int_id(_dst_id), int_id(_stream_id))
-
+                        self._logger.info('(%s) Packet on TS%s from %s (%s) for destination ID %s [Stream: %s]', self._system, _slot, self._clients[_radio_id]['CALLSIGN'], int_id(_radio_id), int_id(_dst_id), int_id(_stream_id))
                         for _client in self._clients:
-                            if _client != _radio_id and (self._clients[_client]['TG'] == int_id(_dst_id) or self._clients[_client]['TG'] == 444411):
+                            if _client != _radio_id and self._clients[_client]['CONNECTION'] == 'YES':
+                                if (self._clients[_client]['TG'] == _dst_id_int or self._clients[_client]['TG'] == 444411):
 
-                                _data = _data[0:11] + _client + _data[15:]
+                                    _data = _data[0:11] + _client + _data[15:]
 
-                                self.send_client(_client, _data)
-                                self._logger.debug('(%s) Packet on TS%s from %s (%s) for destination ID %s repeated to client: %s (%s) [Stream ID: %s]', self._system, _slot, self._clients[_radio_id]['CALLSIGN'], int_id(_radio_id), int_id(_dst_id), self._clients[_client]['CALLSIGN'], int_id(_client), int_id(_stream_id))
+                                    self.send_client(_client, _data)
+                                    #self._logger.info('(%s) Packet on TS%s from %s (%s) for destination ID %s repeated to client: %s (%s) [Stream ID: %s]', self._system, _slot, self._clients[_radio_id]['CALLSIGN'], int_id(_radio_id), int_id(_dst_id), self._clients[_client]['CALLSIGN'], int_id(_client), int_id(_stream_id))
+                                #elif _dst_id_int == 9 and int(self._clients[_client]['TG']) == 31665:
+                                #    self._logger.info('sending to TG31665')
+                                    #._logger.info('(%s) Packet on TS%s from %s (%s) for destination ID %s swapped to %s repeated to client: %s (%s) [Stream ID: %s]', self._system, _slot, self._clients[_radio_id]['CALLSIGN'], int_id(_radio_id), int_id(_dst_id), self._clients[_client]['TG']), self._clients[_client]['CALLSIGN'], int_id(_client), int_id(_stream_id))
+                                    
+                                #    _data = _data[0:8] + hex_str_3(31665) + _client + _data[15:]
+                                #    self.send_client(_client, _data)              
+                               # elif _dst_id_int == 31665 and int(self._clients[_client]['TG']) == 9:
+                                #    self._logger.info('sending to TG9')
+#self._logger.info('(%s) Packet on TS%s from %s (%s) for destination ID %s swapped to %s  repeated to client: %s (%s) [Stream ID: %s]', self._system, _slot, self._clients[_radio_id]['CALLSIGN'], int_id(_radio_id), int_id(_dst_id), str(hex_str_4(self._clients[_client]['TG'])), self._clients[_client]['CALLSIGN'], int_id(_client), int_id(_stream_id))
+                                #    _data = _data[0:8] + hex_str_3(9) + _client + _data[15:]
+                               #     self.send_client(_client, _data)                                                           
+                                #elif int_id(_dst_id) == 31665 && self._clients[_client]['TG'] == 31665:
+                                    
+                                #    _data = _data[0:11] + _client + _data[15:]
 
+                                #    self.send_client(_client, _data) 
+                        
                 # Userland actions -- typically this is the function you subclass for an application
                 self.dmrd_received(_radio_id, _rf_src, _dst_id, _seq, _slot, _call_type, _frame_type, _dtype_vseq, _stream_id, _data)
 
@@ -450,8 +488,10 @@ class HBSYSTEM(DatagramProtocol):
                     self.send_client(_radio_id, 'RPTACK'+_radio_id)
                     self._logger.info('(%s) Client %s has completed the login exchange successfully', self._system, _this_client['RADIO_ID'])
                 else:
+                    self._logger.info('test')
                     self._logger.info('(%s) Client %s has FAILED the login exchange successfully', self._system, _this_client['RADIO_ID'])
-                    self.transport.write('MSTNAK'+_radio_id, (_host, _port))
+                    self._logger.info(' calc: %s - %s', _calc_hash.encode('hex'), _sent_hash.encode('hex'))
+                    self.transport.write('MSTNAK'+_radio_id, (_hostport))
                     client.connection = "NO"
                     self.db.commit()
                     del self._clients[_radio_id]
@@ -523,8 +563,8 @@ class HBSYSTEM(DatagramProtocol):
                         client_info.ip_address = _host
                         client_info.radio_id = int(ahex(_radio_id), 16)
                         self.db.commit()
-                    except:
-                        self._logger.warning('Error getting client info for %s from %s', str(int(ahex(_radio_id), 16)), _host)
+                    except Exception as e:
+                        self._logger.warning('Error getting client info for %s from %s %s', str(int(ahex(_radio_id), 16)), _host, e)
 
                     _this_client['CONNECTION'] = 'YES'
                     _this_client['LAST_PING'] = time()
@@ -580,8 +620,8 @@ class HBSYSTEM(DatagramProtocol):
                         client_info.ip_address = _host
                         client_info.radio_id = int(ahex(_radio_id), 16)
                         self.db.commit()
-                    except:
-                        self._logger.warning('Error getting client info for %s from %s', str(int(ahex(_radio_id), 16)), _host)
+                    except Exception as e:
+                        self._logger.warning('Error getting client info for %s from %s %s', str(int(ahex(_radio_id), 16)), _host, e)
 
                     self.send_client(_radio_id, 'RPTACK'+_radio_id)
                     self._logger.info('(%s) Client %s (%s) has sent repeater configuration', self._system, _this_client['CALLSIGN'], _this_client['RADIO_ID'])
