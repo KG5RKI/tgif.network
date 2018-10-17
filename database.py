@@ -11,7 +11,10 @@ def open_database():
     return create_engine('mysql://tgif:bi9tKWXyT4i6wVBv@localhost/tgif')
 
 def ip2long(address):
-        return unpack("!L", inet_aton(address))[0]
+    return unpack("!L", inet_aton(address))[0]
+
+def long2ip(addr):
+    return inet_ntoa(pack('!L', addr))
 
 def create_session_factory(engine):
     return sessionmaker(bind=engine)
@@ -30,7 +33,7 @@ class repeater(Base):
     last_ping = Column(Integer)
     salt = Column(BigInteger)
     connection = Column(String(32))
-
+    tg = Column(Integer)
 
     def __init__(self, addr, id):
         self.address = addr
@@ -40,6 +43,7 @@ class repeater(Base):
         self.salt = 0
         self.port = 0
         self.connection = "NO"
+        self.tg = 9
 
     def __repr__(self):
         return "<('{0}', '{1}', '{2}')>".format(self.address, self.repeater_id, self.dmr_ids)
@@ -87,6 +91,52 @@ class client_info(Base):
         self.url = 'UNK'
         self.software_id = 'UNK'
         self.package_id = 'UNK'
+
+    def __repr__(self):
+        return "<('{0}', '{1}', '{2}')>".format(self.address, self.repeater_id, self.dmr_ids)
+
+
+class talkgroup(Base):
+    __tablename__ = 'talkgroups'
+
+    id = Column(Integer, primary_key=True)
+
+    # identifying bits
+    talkgroup = Column(Integer)
+    last_station = Column(Integer)
+    timestamp = Column(Integer)
+    stream_id = Column(BigInteger)
+    
+
+    def __init__(self, talkgroup):
+        self.talkgroup = talkgroup
+        self.last_station = 0
+        self.timestamp = 0
+        self.stream_id = 0
+
+    def __repr__(self):
+        return "<('{0}', '{1}', '{2}')>".format(self.address, self.repeater_id, self.dmr_ids)
+
+
+class lastheard(Base):
+    __tablename__ = 'lastheard'
+
+    id = Column(Integer, primary_key=True)
+
+    # identifying bits
+    ip_address = Column(String(22))
+    radio_id = Column(Integer)
+    callsign = Column(String(12))
+    talkgroup = Column(Integer)
+    timestamp = Column(Integer)
+    
+
+    def __init__(self, talkgroup, callsign, radio_id, ip, timestamp):
+        self.talkgroup = talkgroup
+        self.callsign = callsign
+        self.timestamp = timestamp
+        self.ip_address = ip
+        self.radio_id = radio_id
 
     def __repr__(self):
         return "<('{0}', '{1}', '{2}')>".format(self.address, self.repeater_id, self.dmr_ids)

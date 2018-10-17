@@ -192,6 +192,20 @@ class HBSYSTEM(DatagramProtocol):
             #self._logger.info('%s: found repeater %s', address, repeater_id)
 
         return client
+
+    def get_routes(self, tgnum):
+        clients = self.db.query(db.repeater).filter(db.repeater.tg==tgnum, time() - db.repeater.last_ping < 100, db.repeater.connection == "YES")
+
+        return clients
+
+    def get_talkgroup(self, tgnum):
+        talkgroup = self.db.query(db.talkgroup).filter(db.talkgroup.talkgroup==tgnum).first()
+        if not talkgroup:
+            talkgroup = db.talkgroup(tgnum)
+            self.db.add(talkgroup)
+            self.db.commit()
+            self._logger.info('Added new talkgroup: %s', tgnum)
+        return talkgroup
     
     def get_client_info(self, address, repeater_id, **kwargs):
         client = self.db.query(db.client_info).filter_by(radio_id=repeater_id, ip_address=address).first()
@@ -320,6 +334,8 @@ class HBSYSTEM(DatagramProtocol):
                 if _dst_id_int == 0:
                     return
                 self._clients[_radio_id]['TG'] = _dst_id_int
+                client.tg = self._clients[_radio_id]['TG']
+                self.db.commit() 
                 #self._logger.debug('(%s) DMRD - Seqence: %s, RF Source: %s, Destination ID: %s', self._system, int_id(_seq), int_id(_rf_src), int_id(_dst_id))
 
                 # If AMBE audio exporting is configured...
@@ -330,10 +346,10 @@ class HBSYSTEM(DatagramProtocol):
                 _ambe = _dmr_frame[0:108] + _dmr_frame[156:264]
                 #_sock.sendto(_ambe.tobytes(), ("127.0.0.1", 31000))
 
-                ambeBytes = _ambe.tobytes()
-                self._sock.sendto(ambeBytes[0:9], ("127.0.0.1", 3333))
-                self._sock.sendto(ambeBytes[9:18], ("127.0.0.1", 3333))
-                self._sock.sendto(ambeBytes[18:27], ("127.0.0.1", 3333))
+                #ambeBytes = _ambe.tobytes()
+                #self._sock.sendto(ambeBytes[0:9], ("127.0.0.1", 3333))
+                #self._sock.sendto(ambeBytes[9:18], ("127.0.0.1", 3333))
+                #self._sock.sendto(ambeBytes[18:27], ("127.0.0.1", 3333))
                 
 
                 # database logic
@@ -392,16 +408,38 @@ class HBSYSTEM(DatagramProtocol):
 										
 
                     
-                    if okgo == 1 and _dst_id_int != 0: #and _rf_src != 310033 and _radio_id != 310033:
+                    if okgo == 1: #and _rf_src != 310033 and _radio_id != 310033:
                     	   #self._logger.debug('(%s) Packet on TS%s from %s (%s) for destination ID %s [Stream ID: %s]', self._system, _slot, self._clients[_radio_id]['CALLSIGN'], int_id(_radio_id), int_id(_dst_id), int_id(_stream_id))
+                        talkgroup = self.get_talkgroup(_dst_id_int)
+                        if(talkgroup.stream_id != int_id(_stream_id)):
+                            talkgroup.stream_id = int_id(_stream_id)
+                            talkgroup.last_station = int_id(_radio_id)
+                            talkgroup.timestamp = time()
+
+                            info = self.get_client_info(_host, int(ahex(_radio_id), 16))
+                            lastheard = db.lastheard(_dst_id_int, info.callsign, int_id(_radio_id), db.ip2long(_host), time())
+                            self.db.add(lastheard)
+                            self.db.commit()
+
+
+                        clients = self.get_routes(_dst_id_int)
+                        
                         self._logger.info('(%s) Packet on TS%s from %s (%s) for destination ID %s [Stream: %s]', self._system, _slot, self._clients[_radio_id]['CALLSIGN'], int_id(_radio_id), int_id(_dst_id), int_id(_stream_id))
-                        for _client in self._clients:
-                            if _client != _radio_id and self._clients[_client]['CONNECTION'] == 'YES':
-                                if (self._clients[_client]['TG'] == _dst_id_int or self._clients[_client]['TG'] == 444411):
+                        for _client in clients:
+                            if _client.repeater_id != int_id(_radio_id):
+                                #self._logger.info('(%s:%s) %s %s (%s) ', db.long2ip(_client.address), _client.port, _client.repeater_id, _client.tg, _client.connection)
+                                _data = _data[0:11] + pack('>I', _client.repeater_id) + _data[15:]
+                                self.transport.write(_data, (db.long2ip(_client.address), _client.port))
+                                
 
-                                    _data = _data[0:11] + _client + _data[15:]
+                        #self._logger.info('(%s) Packet on TS%s from %s (%s) for destination ID %s [Stream: %s]', self._system, _slot, self._clients[_radio_id]['CALLSIGN'], int_id(_radio_id), int_id(_dst_id), int_id(_stream_id))
+                        #for _client in self._clients:
+                            #if _client != _radio_id and self._clients[_client]['CONNECTION'] == 'YES':
+                                #if (self._clients[_client]['TG'] == _dst_id_int or self._clients[_client]['TG'] == 444411):
 
-                                    self.send_client(_client, _data)
+                                    #_data = _data[0:11] + _client + _data[15:]
+
+                                    #self.send_client(_client, _data)
                                     #self._logger.info('(%s) Packet on TS%s from %s (%s) for destination ID %s repeated to client: %s (%s) [Stream ID: %s]', self._system, _slot, self._clients[_radio_id]['CALLSIGN'], int_id(_radio_id), int_id(_dst_id), self._clients[_client]['CALLSIGN'], int_id(_client), int_id(_stream_id))
                                 #elif _dst_id_int == 9 and int(self._clients[_client]['TG']) == 31665:
                                 #    self._logger.info('sending to TG31665')
@@ -539,7 +577,7 @@ class HBSYSTEM(DatagramProtocol):
                         'URL': _data[98:222],
                         'SOFTWARE_ID': _data[222:262],
                         'PACKAGE_ID': _data[262:302],
-                        'TG': 9,
+                        'TG': client.tg,
                     }})
 
                     _this_client = self._clients[_radio_id]
