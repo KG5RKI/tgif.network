@@ -33,6 +33,10 @@ __license__    = 'GNU GPLv3'
 __maintainer__ = 'Cort Buffington, N0MJS'
 __email__      = 'n0mjs@me.com'
 
+ID_MIN = 1
+ID_MAX = 16776415
+
+
 # Timers
 STREAM_TO = .360
 
