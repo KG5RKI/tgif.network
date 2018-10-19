@@ -159,58 +159,7 @@ class HB_BRIDGE(HBSYSTEM):
 
 
     # HBLink callback with DMR data from perr/master.  Send this data to any partner listening
-    def dmrd_received(self, _radio_id, _rf_src, _dst_id, _seq, _slot, _call_type, _frame_type, _dtype_vseq, _stream_id, _data):
-        _dst_id, _slot = translate.find_rule(_dst_id,_slot)
-        
-		  #if dst talkgroup is not in rule set, do not forward data to partner applications        
-        if _dst_id == 0:
-            return		
-        cur_time = time()
-        client_ip = self.transport.getPeer()
-        okgo = 0
-        try:
-            ind = str(int_id(_dst_id))
-            if ind not in dmrd_last_ip:
-            	dmrd_last_ip[ind] = client_ip
-
-            if dmrd_last_ip[ind] != client_ip or _tx_slot.lastSeq != _seq:
-               if ind not in dmrd_last_time:
-               	dmrd_last_time[ind] = cur_time
-               	self._logger.debug('dmrd new tg dest %s', ind)
-               	okgo = 1
-               elif cur_time > (cur_time - dmrd_last_time[ind] > 1.5):
-               	dmrd_last_ip[ind] = client_ip
-               	okgo = 1
-               	self._logger.debug('dmrd_ > 3 %d', cur_time)
-               else:
-               	self._logger.debug('dmrd_last_ip %s', dmrd_last_ip[ind])
-               
-               	
-            else:
-               okgo = 1
-            dmrd_last_time[ind] = cur_time
-        except:
-            okgo = 1
-            self._logger.debug('Failed to get tg info for %d', int_id(_dst_id))
-        #self._logger.debug('Failed to get tg info for %d', int_id(_dst_id))    
-        if okgo == 1 and _rf_src != 310033 and _radio_id != 310033:
-            _tx_slot = self.hb_ambe.tx[_slot]
-            _seq = ord(_data[4])
-            _tx_slot.frame_count += 1
-            if (_stream_id != _tx_slot.stream_id):
-               self.hb_ambe.begin_call(_slot, _rf_src, _dst_id, _radio_id, _tx_slot.cc, _seq, _stream_id)
-               _tx_slot.lastSeq = _seq
-            if (_frame_type == hb_const.HBPF_DATA_SYNC) and (_dtype_vseq == hb_const.HBPF_SLT_VTERM) and (_tx_slot.type != hb_const.HBPF_SLT_VTERM):
-               self.hb_ambe.end_call(_tx_slot)
-            if (int_id(_data[15]) & 0x20) == 0:
-               _dmr_frame = BitArray('0x'+ahex(_data[20:]))
-               _ambe = _dmr_frame[0:108] + _dmr_frame[156:264]
-               self.hb_ambe.export_voice(_tx_slot, _seq, _ambe.tobytes())
-               self._logger.debug('Exporting voice %d to %d', int_id(_seq), int_id(_dst_id))
-            else:
-               _tx_slot.lastSeq = _seq
-        else:
-        		self._logger.debug('Skipping transmit to %d', int_id(_dst_id))
+    
 
     # The methods below are overridden becuse the launchUDP thread can also wite to a master or client async and confuse the master
     # A lock is used to synchronize the two threads so that the resource is protected
@@ -223,6 +172,23 @@ class HB_BRIDGE(HBSYSTEM):
         #mutex.acquire()
         HBSYSTEM.send_clients(self, _packet)
         #mutex.release()
+        
+    def dmrd_received(self, _radio_id, _rf_src, _dst_id, _seq, _slot, _call_type, _frame_type, _dtype_vseq, _stream_id, _data):
+        _dst_id, _slot = translate.find_rule(_dst_id,_slot)
+        _tx_slot = self.hb_ambe.tx[_slot]
+        _seq = ord(_data[4])
+        _tx_slot.frame_count += 1
+        if (_stream_id != _tx_slot.stream_id):
+            self.hb_ambe.begin_call(_slot, _rf_src, _dst_id, _radio_id, _tx_slot.cc, _seq, _stream_id)
+            _tx_slot.lastSeq = _seq
+        if (_frame_type == hb_const.HBPF_DATA_SYNC) and (_dtype_vseq == hb_const.HBPF_SLT_VTERM) and (_tx_slot.type != hb_const.HBPF_SLT_VTERM):
+            self.hb_ambe.end_call(_tx_slot)
+        if (int_id(_data[15]) & 0x20) == 0:
+            _dmr_frame = BitArray('0x'+ahex(_data[20:]))
+            _ambe = _dmr_frame[0:108] + _dmr_frame[156:264]
+            self.hb_ambe.export_voice(_tx_slot, _seq, _ambe.tobytes())
+        else:
+            _tx_slot.lastSeq = _seq
 
 
 class report(NetstringReceiver):
