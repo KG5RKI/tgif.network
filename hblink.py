@@ -142,6 +142,54 @@ class AMBE:
 #     HB MASTER CLASS
 #************************************************
 
+def try_find_client(sqldb, address, repeater_id, **kwargs):
+    client = sqldb.query(db.repeater).filter_by(address=address, repeater_id=repeater_id).first()
+
+    # user not found
+    if not client:
+        client = db.repeater(address, repeater_id)
+        client.address = address
+        client.repeater_id = repeater_id
+        sqldb.add(client)
+        sqldb.commit()
+        #self._logger.info('%s: added repeater %s', address, repeater_id)
+        return client
+        #else:
+            #self._logger.info('%s: found repeater %s', address, repeater_id)
+
+    return client
+
+def get_routes(sqldb, tgnum):
+    clients = sqldb.query(db.repeater).filter(db.repeater.tg==tgnum, time() - db.repeater.last_ping < 100, db.repeater.connection == "YES")
+
+    return clients
+
+def get_talkgroup(sqldb, tgnum):
+    talkgroup = sqldb.query(db.talkgroup).filter(db.talkgroup.talkgroup==tgnum).first()
+    if not talkgroup:
+        talkgroup = db.talkgroup(tgnum)
+        sqldb.add(talkgroup)
+        sqldb.commit()
+        #self._logger.info('Added new talkgroup: %s', tgnum)
+    return talkgroup
+    
+def get_client_info(sqldb, address, repeater_id, **kwargs):
+    client = sqldb.query(db.client_info).filter_by(radio_id=repeater_id, ip_address=address).first()
+
+    # user not found
+    if not client:
+        client = db.client_info(address, repeater_id)
+        client.address = address
+        client.repeater_id = repeater_id
+        sqldb.add(client)
+        sqldb.commit()
+        #self._logger.info('%s: added client_info %s', address, repeater_id)
+        return client
+        #else:
+            #self._logger.info('%s: found repeater %s', address, repeater_id)
+
+    return client
+
 class HBSYSTEM(DatagramProtocol):
     
     def __init__(self, _name, _config, _logger, _report):
@@ -155,7 +203,9 @@ class HBSYSTEM(DatagramProtocol):
 
         self.engine = db.open_database()
         self.Session = db.create_session_factory(self.engine)
-        self.db = self.Session()
+        #self.db = self.Session()
+        self._logger.info('Opening SQL Session')
+
         
         # Define shortcuts and generic function names based on the type of system we are
         if self._config['MODE'] == 'MASTER':
@@ -176,53 +226,7 @@ class HBSYSTEM(DatagramProtocol):
         if self._config['EXPORT_AMBE']:
             self._ambe = AMBE(_config, _logger)
 
-    def try_find_client(self, address, repeater_id, **kwargs):
-        client = self.db.query(db.repeater).filter_by(address=address, repeater_id=repeater_id).first()
-
-        # user not found
-        if not client:
-            client = db.repeater(address, repeater_id)
-            client.address = address
-            client.repeater_id = repeater_id
-            self.db.add(client)
-            self.db.commit()
-            self._logger.info('%s: added repeater %s', address, repeater_id)
-            return client
-        #else:
-            #self._logger.info('%s: found repeater %s', address, repeater_id)
-
-        return client
-
-    def get_routes(self, tgnum):
-        clients = self.db.query(db.repeater).filter(db.repeater.tg==tgnum, time() - db.repeater.last_ping < 100, db.repeater.connection == "YES")
-
-        return clients
-
-    def get_talkgroup(self, tgnum):
-        talkgroup = self.db.query(db.talkgroup).filter(db.talkgroup.talkgroup==tgnum).first()
-        if not talkgroup:
-            talkgroup = db.talkgroup(tgnum)
-            self.db.add(talkgroup)
-            self.db.commit()
-            self._logger.info('Added new talkgroup: %s', tgnum)
-        return talkgroup
     
-    def get_client_info(self, address, repeater_id, **kwargs):
-        client = self.db.query(db.client_info).filter_by(radio_id=repeater_id, ip_address=address).first()
-
-        # user not found
-        if not client:
-            client = db.client_info(address, repeater_id)
-            client.address = address
-            client.repeater_id = repeater_id
-            self.db.add(client)
-            self.db.commit()
-            self._logger.info('%s: added client_info %s', address, repeater_id)
-            return client
-        #else:
-            #self._logger.info('%s: found repeater %s', address, repeater_id)
-
-        return client
 
     def handle_exception(self, exc_type, exc_value, exc_traceback):
         if issubclass(exc_type, KeyboardInterrupt):
@@ -313,10 +317,11 @@ class HBSYSTEM(DatagramProtocol):
 
         # Extract the command, which is various length, all but one 4 significant characters -- RPTCL
         _command = _data[:4]
-
+        sqldb = self.Session()
         if _command == 'DMRD':    # DMRData -- encapsulated DMR data frame
             _radio_id = _data[11:15]
-            client = self.try_find_client(db.ip2long(_host), int(ahex(_radio_id), 16))
+            
+            client = try_find_client(sqldb, db.ip2long(_host), int(ahex(_radio_id), 16))
             if _radio_id in self._clients \
                         and self._clients[_radio_id]['CONNECTION'] == 'YES' \
                         and self._clients[_radio_id]['IP'] == _host \
@@ -333,9 +338,11 @@ class HBSYSTEM(DatagramProtocol):
                 _dst_id_int = int_id(_dst_id)
                 if _dst_id_int == 0:
                     return
-                self._clients[_radio_id]['TG'] = _dst_id_int
-                client.tg = self._clients[_radio_id]['TG']
-                self.db.commit() 
+                if self._clients[_radio_id]['TG'] != _dst_id_int:
+
+                    self._clients[_radio_id]['TG'] = _dst_id_int
+                    client.tg = self._clients[_radio_id]['TG']
+                    sqldb.commit() 
                 #self._logger.debug('(%s) DMRD - Seqence: %s, RF Source: %s, Destination ID: %s', self._system, int_id(_seq), int_id(_rf_src), int_id(_dst_id))
 
                 # If AMBE audio exporting is configured...
@@ -367,7 +374,7 @@ class HBSYSTEM(DatagramProtocol):
                         #self._logger.info("(%s) %s is trying to add more than %s DMR ID(s) (%s)", self._system, client_ip, flag_count, dmr_id)
 
                 # The basic purpose of a master is to repeat to the clients
-                if self._config['REPEAT'] == True:
+                if self._config['REPEAT'] == True and _call_type == 'group':
 
 
 	
@@ -408,26 +415,29 @@ class HBSYSTEM(DatagramProtocol):
 										
 
                     
-                    if okgo == 1: #and _rf_src != 310033 and _radio_id != 310033:
+                    if okgo == 1 and _rf_src != 0 and _radio_id != 0:
                     	   #self._logger.debug('(%s) Packet on TS%s from %s (%s) for destination ID %s [Stream ID: %s]', self._system, _slot, self._clients[_radio_id]['CALLSIGN'], int_id(_radio_id), int_id(_dst_id), int_id(_stream_id))
-                        talkgroup = self.get_talkgroup(_dst_id_int)
+                        talkgroup = get_talkgroup(sqldb, _dst_id_int)
                         if(talkgroup.stream_id != int_id(_stream_id)):
                             talkgroup.stream_id = int_id(_stream_id)
                             talkgroup.last_station = int_id(_radio_id)
                             talkgroup.timestamp = time()
 
-                            info = self.get_client_info(_host, int(ahex(_radio_id), 16))
-                            lastheard = db.lastheard(_dst_id_int, info.callsign, int_id(_radio_id), db.ip2long(_host), time())
-                            self.db.add(lastheard)
-                            self.db.commit()
+                            info = get_client_info(sqldb, _host, int(ahex(_radio_id), 16))
+                            lastheard = db.lastheard(_dst_id_int, info.callsign, dmr_id, db.ip2long(_host), time())
+                            sqldb.add(lastheard)
+                            sqldb.commit()
+                            self._logger.info('(%s) Packet on TS%s from %s (%s) for destination ID %s [Stream: %s]', self._system, _slot, self._clients[_radio_id]['CALLSIGN'], int_id(_radio_id), int_id(_dst_id), int_id(_stream_id))
 
 
-                        clients = self.get_routes(_dst_id_int)
+
+                        #METHOD USING MYSQL, CAUSES MEMORY LEAK FIX LATER
+                        clients = get_routes(sqldb, _dst_id_int)
                         
-                        self._logger.info('(%s) Packet on TS%s from %s (%s) for destination ID %s [Stream: %s]', self._system, _slot, self._clients[_radio_id]['CALLSIGN'], int_id(_radio_id), int_id(_dst_id), int_id(_stream_id))
+                        #self._logger.info('(%s) Packet on TS%s from %s (%s) for destination ID %s [Stream: %s]', self._system, _slot, self._clients[_radio_id]['CALLSIGN'], int_id(_radio_id), int_id(_dst_id), int_id(_stream_id))
                         for _client in clients:
                             if _client.repeater_id != int_id(_radio_id):
-                                #self._logger.info('(%s:%s) %s %s (%s) ', db.long2ip(_client.address), _client.port, _client.repeater_id, _client.tg, _client.connection)
+                                self._logger.info('(%s:%s) %s %s (%s) ', db.long2ip(_client.address), _client.port, _client.repeater_id, _client.tg, _client.connection)
                                 _data = _data[0:11] + pack('>I', _client.repeater_id) + _data[15:]
                                 self.transport.write(_data, (db.long2ip(_client.address), _client.port))
                                 
@@ -449,7 +459,7 @@ class HBSYSTEM(DatagramProtocol):
                                 #    self.send_client(_client, _data)              
                                # elif _dst_id_int == 31665 and int(self._clients[_client]['TG']) == 9:
                                 #    self._logger.info('sending to TG9')
-#self._logger.info('(%s) Packet on TS%s from %s (%s) for destination ID %s swapped to %s  repeated to client: %s (%s) [Stream ID: %s]', self._system, _slot, self._clients[_radio_id]['CALLSIGN'], int_id(_radio_id), int_id(_dst_id), str(hex_str_4(self._clients[_client]['TG'])), self._clients[_client]['CALLSIGN'], int_id(_client), int_id(_stream_id))
+                            #self._logger.info('(%s) Packet on TS%s from %s (%s) for destination ID %s swapped to %s  repeated to client: %s (%s) [Stream ID: %s]', self._system, _slot, self._clients[_radio_id]['CALLSIGN'], int_id(_radio_id), int_id(_dst_id), str(hex_str_4(self._clients[_client]['TG'])), self._clients[_client]['CALLSIGN'], int_id(_client), int_id(_stream_id))
                                 #    _data = _data[0:8] + hex_str_3(9) + _client + _data[15:]
                                #     self.send_client(_client, _data)                                                           
                                 #elif int_id(_dst_id) == 31665 && self._clients[_client]['TG'] == 31665:
@@ -463,7 +473,7 @@ class HBSYSTEM(DatagramProtocol):
 
         elif _command == 'RPTL':    # RPTLogin -- a repeater wants to login
             _radio_id = _data[4:8]
-            client = self.try_find_client(db.ip2long(_host), int(ahex(_radio_id), 16))
+            client = try_find_client(sqldb, db.ip2long(_host), int(ahex(_radio_id), 16))
             if _radio_id and self.check_dmrid(int(ahex(_radio_id), 16)):           # Future check here for valid Radio ID
                 self._clients.update({_radio_id: {      # Build the configuration data strcuture for the client
                     'CONNECTION': 'RPTL-RECEIVED',
@@ -487,19 +497,18 @@ class HBSYSTEM(DatagramProtocol):
                     'URL': '',
                     'SOFTWARE_ID': '',
                     'PACKAGE_ID': '',
-                    'TG': 9,
+                    'TG': client.tg,
                 }})
                 client.salt = self._clients[_radio_id]['SALT']
                 client.last_ping = self._clients[_radio_id]['LAST_PING']
                 client.port = _port
-                #self.db.commit()
 
                 self._logger.info('(%s) Repeater Logging in with Radio ID: %s, %s:%s', self._system, int_id(_radio_id), _host, _port)
                 _salt_str = hex_str_4(self._clients[_radio_id]['SALT'])
                 self.send_client(_radio_id, 'RPTACK'+_salt_str)
                 self._clients[_radio_id]['CONNECTION'] = 'CHALLENGE_SENT'
                 client.connection = self._clients[_radio_id]['CONNECTION']
-                self.db.commit()
+                sqldb.commit()
                 self._logger.info('(%s) Sent Challenge Response to %s for login: %s', self._system, int_id(_radio_id), self._clients[_radio_id]['SALT'])
             else:
                 self.transport.write('MSTNAK'+_radio_id, (_host, _port))
@@ -507,7 +516,7 @@ class HBSYSTEM(DatagramProtocol):
 
         elif _command == 'RPTK':    # Repeater has answered our login challenge
             _radio_id = _data[4:8]
-            client = self.try_find_client(db.ip2long(_host), int(ahex(_radio_id), 16))
+            client = try_find_client(sqldb, db.ip2long(_host), int(ahex(_radio_id), 16))
             if _radio_id in self._clients \
                         and self._clients[_radio_id]['CONNECTION'] == 'CHALLENGE_SENT' \
                         and self._clients[_radio_id]['IP'] == _host \
@@ -522,16 +531,16 @@ class HBSYSTEM(DatagramProtocol):
                 if _sent_hash == _calc_hash:
                     _this_client['CONNECTION'] = 'WAITING_CONFIG'
                     client.connection = _this_client['CONNECTION']
-                    self.db.commit()
+                    sqldb.commit()
                     self.send_client(_radio_id, 'RPTACK'+_radio_id)
                     self._logger.info('(%s) Client %s has completed the login exchange successfully', self._system, _this_client['RADIO_ID'])
                 else:
                     self._logger.info('test')
                     self._logger.info('(%s) Client %s has FAILED the login exchange successfully', self._system, _this_client['RADIO_ID'])
                     self._logger.info(' calc: %s - %s', _calc_hash.encode('hex'), _sent_hash.encode('hex'))
-                    self.transport.write('MSTNAK'+_radio_id, (_hostport))
+                    self.transport.write('MSTNAK'+_radio_id, (_host, _port))
                     client.connection = "NO"
-                    self.db.commit()
+                    sqldb.commit()
                     del self._clients[_radio_id]
             else:
                 self.transport.write('MSTNAK'+_radio_id, (_host, _port))
@@ -540,20 +549,20 @@ class HBSYSTEM(DatagramProtocol):
         elif _command == 'RPTC':    # Repeater is sending it's configuraiton OR disconnecting
             if _data[:5] == 'RPTCL':    # Disconnect command
                 _radio_id = _data[5:9]
-                client = self.try_find_client(db.ip2long(_host), int(ahex(_radio_id), 16))
+                client = try_find_client(sqldb, db.ip2long(_host), int(ahex(_radio_id), 16))
                 if _radio_id in self._clients \
                             and self._clients[_radio_id]['CONNECTION'] == 'YES' \
                             and self._clients[_radio_id]['IP'] == _host \
                             and self._clients[_radio_id]['PORT'] == _port:
                     client.connection = "NO"
-                    self.db.commit()
+                    sqldb.commit()
                     self._logger.info('(%s) Client is closing down: %s (%s)', self._system, self._clients[_radio_id]['CALLSIGN'], int_id(_radio_id))
                     self.transport.write('MSTNAK'+_radio_id, (_host, _port))
                     del self._clients[_radio_id]
             
             else:
                 _radio_id = _data[4:8]      # Configure Command
-                client = self.try_find_client(db.ip2long(_host), int(ahex(_radio_id), 16))
+                client = try_find_client(sqldb, db.ip2long(_host), int(ahex(_radio_id), 16))
                 if _radio_id not in self._clients and client and self.check_dmrid(int(ahex(_radio_id), 16)):
                     self._clients.update({_radio_id: {      # Build the configuration data strcuture for the client
                         'CONNECTION': 'YES',
@@ -583,7 +592,7 @@ class HBSYSTEM(DatagramProtocol):
                     _this_client = self._clients[_radio_id]
 
                     try:
-                        client_info = self.get_client_info(_host, int(ahex(_radio_id), 16))
+                        client_info = get_client_info(sqldb, _host, int(ahex(_radio_id), 16))
                         client_info.callsign = _this_client['CALLSIGN']
                         client_info.rx_freq = _this_client['RX_FREQ']
                         client_info.tx_freq = _this_client['TX_FREQ']
@@ -600,7 +609,7 @@ class HBSYSTEM(DatagramProtocol):
                         client_info.package_id = _this_client['PACKAGE_ID']
                         client_info.ip_address = _host
                         client_info.radio_id = int(ahex(_radio_id), 16)
-                        self.db.commit()
+                        sqldb.commit()
                     except Exception as e:
                         self._logger.warning('Error getting client info for %s from %s %s', str(int(ahex(_radio_id), 16)), _host, e)
 
@@ -608,7 +617,7 @@ class HBSYSTEM(DatagramProtocol):
                     _this_client['LAST_PING'] = time()
                     client.connection = _this_client['CONNECTION']
                     client.last_ping = _this_client['LAST_PING']
-                    self.db.commit()
+                    sqldb.commit()
 
                     self.send_client(_radio_id, 'RPTACK'+_radio_id)
                     self._logger.info('(%s) Client %s (%s) has sent repeater configuration', self._system, _this_client['CALLSIGN'], _this_client['RADIO_ID'])
@@ -634,13 +643,13 @@ class HBSYSTEM(DatagramProtocol):
                     _this_client['URL'] = _data[98:222]
                     _this_client['SOFTWARE_ID'] = _data[222:262]
                     _this_client['PACKAGE_ID'] = _data[262:302]
-                    _this_client['TG'] = 9
+                    _this_client['TG'] = client.tg
                     client.connection = _this_client['CONNECTION']
                     client.last_ping = _this_client['LAST_PING']
-                    self.db.commit()
+                    sqldb.commit()
 
                     try:
-                        client_info = self.get_client_info(_host, int(ahex(_radio_id), 16))
+                        client_info = get_client_info(sqldb, _host, int(ahex(_radio_id), 16))
                         client_info.callsign = _this_client['CALLSIGN']
                         client_info.rx_freq = _this_client['RX_FREQ']
                         client_info.tx_freq = _this_client['TX_FREQ']
@@ -657,7 +666,7 @@ class HBSYSTEM(DatagramProtocol):
                         client_info.package_id = _this_client['PACKAGE_ID']
                         client_info.ip_address = _host
                         client_info.radio_id = int(ahex(_radio_id), 16)
-                        self.db.commit()
+                        sqldb.commit()
                     except Exception as e:
                         self._logger.warning('Error getting client info for %s from %s %s', str(int(ahex(_radio_id), 16)), _host, e)
 
@@ -669,7 +678,7 @@ class HBSYSTEM(DatagramProtocol):
 
         elif _command == 'RPTP':    # RPTPing -- client is pinging us
                 _radio_id = _data[7:11]
-                client = self.try_find_client(db.ip2long(_host), int(ahex(_radio_id), 16))
+                client = try_find_client(sqldb, db.ip2long(_host), int(ahex(_radio_id), 16))
                 if _radio_id and self.check_dmrid(int(ahex(_radio_id), 16)): 
                     if _radio_id in self._clients \
                                 and self._clients[_radio_id]['CONNECTION'] == "YES" \
@@ -677,7 +686,7 @@ class HBSYSTEM(DatagramProtocol):
                                 and self._clients[_radio_id]['PORT'] == _port:
                         self._clients[_radio_id]['LAST_PING'] = time()
                         client.last_ping = self._clients[_radio_id]['LAST_PING']
-                        self.db.commit()
+                        sqldb.commit()
                         self.send_client(_radio_id, 'MSTPONG'+_radio_id)
                         self._logger.debug('(%s) Received and answered RPTPING from client %s (%s)', self._system, self._clients[_radio_id]['CALLSIGN'], int_id(_radio_id))
                     elif client:
@@ -703,7 +712,7 @@ class HBSYSTEM(DatagramProtocol):
                             'URL': '',
                             'SOFTWARE_ID': '',
                             'PACKAGE_ID': '',
-                            'TG': 9,
+                            'TG': client.tg,
                         }})
                     else:
                         self.transport.write('MSTNAK'+_radio_id, (_host, _port))
@@ -711,6 +720,8 @@ class HBSYSTEM(DatagramProtocol):
 
         else:
             self._logger.error('(%s) Unrecognized command. Raw HBP PDU: %s', self._system, ahex(_data))
+        sqldb.flush()
+        sqldb.close()
         
     # Aliased in __init__ to datagramReceived if system is a client
     def client_datagramReceived(self, _data, (_host, _port)):
