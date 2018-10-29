@@ -464,11 +464,11 @@ class HBSYSTEM(DatagramProtocol):
                     	   #self._logger.debug('(%s) Packet on TS%s from %s (%s) for destination ID %s [Stream ID: %s]', self._system, _slot, self._clients[_radio_id]['CALLSIGN'], int_id(_radio_id), int_id(_dst_id), int_id(_stream_id))
                         talkgroup = get_talkgroup(sqldb, _dst_id_int)
                         
-                        if(talkgroup.stream_id != 0 and _frame_type == 2 and talkgroup.last_station == int_id(_radio_id) and talkgroup.stream_id != int_id(_stream_id)):
+                        #if(talkgroup.stream_id != 0 and _frame_type == 2 and talkgroup.last_station == int_id(_radio_id) and talkgroup.stream_id != int_id(_stream_id)):
                             
-                            _data = _data[0:16] + pack('>I', talkgroup.stream_id) + _data[20:]
-                            self._logger.info('(%s)[%s] !WRN! Stream on TS%s from %s (%s) for destination ID %s INVALID [Stream: %s] -> [%s]', self._system, _host, _slot, self._clients[_radio_id]['CALLSIGN'], int_id(_radio_id), int_id(_dst_id), int_id(_stream_id), talkgroup.stream_id)
-                            _stream_id = _data[16:20]
+                            #_data = _data[0:16] + pack('>I', talkgroup.stream_id) + _data[20:]
+                            #self._logger.info('(%s)[%s] !WRN! Stream on TS%s from %s (%s) for destination ID %s INVALID [Stream: %s] -> [%s]', self._system, _host, _slot, self._clients[_radio_id]['CALLSIGN'], int_id(_radio_id), int_id(_dst_id), int_id(_stream_id), talkgroup.stream_id)
+                            #_stream_id = _data[16:20]
                         
                         if((talkgroup.stream_id != int_id(_stream_id)) and (talkgroup.timestamp < time() - 3)):
                             talkgroup.stream_id = 0
@@ -492,7 +492,8 @@ class HBSYSTEM(DatagramProtocol):
                         clients = get_routes(sqldb, _dst_id_int)
                         
                         #self._logger.info('(%s) Packet on TS%s from %s (%s) for destination ID %s [Stream: %s]', self._system, _slot, self._clients[_radio_id]['CALLSIGN'], int_id(_radio_id), int_id(_dst_id), int_id(_stream_id))
-                        if(talkgroup.last_station == int_id(_radio_id) and talkgroup.stream_id == int_id(_stream_id)):
+                        #if(talkgroup.last_station == int_id(_radio_id) and talkgroup.stream_id == int_id(_stream_id)):
+                        if 1==1:
                             talkgroup.timestamp = time()
                             talkgroup.last_station = int_id(_radio_id)
                             sqldb.commit()
