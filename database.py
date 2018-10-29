@@ -46,7 +46,7 @@ class repeater(Base):
         self.tg = 9
 
     def __repr__(self):
-        return "<('{0}', '{1}', '{2}')>".format(self.address, self.repeater_id, self.dmr_ids)
+        return "<('{0}', '{1}', '{2}', '{3}', '{4}', '{5}', '{6}', '{7}')>".format(long2ip(self.address), self.repeater_id, self.dmr_ids, self.last_ping, self.salt, self.port, self.connection, self.tg)
 
 class client_info(Base):
     __tablename__ = 'client_info'

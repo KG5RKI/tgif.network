@@ -164,17 +164,19 @@ class HB_BRIDGE(HBSYSTEM):
     # The methods below are overridden becuse the launchUDP thread can also wite to a master or client async and confuse the master
     # A lock is used to synchronize the two threads so that the resource is protected
     def send_master(self, _packet):
-        #mutex.acquire()
+        mutex.acquire()
         HBSYSTEM.send_master(self, _packet)
-        #mutex.release()
+        mutex.release()
     
     def send_clients(self, _packet):
-        #mutex.acquire()
+        mutex.acquire()
         HBSYSTEM.send_clients(self, _packet)
-        #mutex.release()
-        
+        mutex.release()
+
     def dmrd_received(self, _radio_id, _rf_src, _dst_id, _seq, _slot, _call_type, _frame_type, _dtype_vseq, _stream_id, _data):
-        _dst_id, _slot = translate.find_rule(_dst_id,_slot)
+        #_dst_id, _slot = translate.find_rule(_dst_id,_slot)
+        if _dst_id != 9 and _dst_id != 1337:
+            return
         _tx_slot = self.hb_ambe.tx[_slot]
         _seq = ord(_data[4])
         _tx_slot.frame_count += 1
